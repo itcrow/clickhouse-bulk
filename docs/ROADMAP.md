@@ -128,6 +128,8 @@ See [DUAL_WRITE.md](./DUAL_WRITE.md), [RISKS.md](./RISKS.md), [CONFIG.md](./CONF
 6. P1.06 replay rate limit (optional)  
 7. ~~P0.01 journal~~ ✅  
 8. ~~P3.17, P3.20–21~~ ✅  
+9. P5.1 ops HTTP tests (optional)  
+10. P5.2 journal / dump / `Run` worker tests  
 
 ---
 
@@ -142,7 +144,8 @@ See [DUAL_WRITE.md](./DUAL_WRITE.md), [RISKS.md](./RISKS.md), [CONFIG.md](./CONF
 | `query_params` for backup | ✅ |
 | `config.sample-backup.json` | ✅ |
 | Journal (P0.01) | ✅ |
-| Roadmap items (open above) | P1.06, P4 (client compatibility) |
+| Roadmap items (open above) | P1.06, P4.2–P4.5, P5 (tests) |
+| Test coverage (P5) | ~74%; see [P5 — Test coverage](#p5--test-coverage-optional) |
 
 ---
 
@@ -152,15 +155,10 @@ Goal: improve interoperability with [clickhouse-go](https://github.com/ClickHous
 
 Design principle: **default path unchanged** (batched text INSERT for Vector/curl); new behaviour behind config flags.
 
-### P4.1 — Opaque INSERT passthrough — open
+### P4.1 — Opaque INSERT passthrough — **done**
 
-- **Problem:** Drivers send `INSERT … FORMAT Native` + `application/octet-stream` (or full query+body blob). Bulk’s `ParseQuery` / `Collector` only merge **text** `FORMAT` / `VALUES` rows.
-- **Proposal:**
-  - Detect passthrough: e.g. `Content-Type: application/octet-stream`, or `FORMAT Native` / `RowBinary` in query, or config `opaque_insert: true` for all INSERTs.
-  - Skip collector batching: after optional journal `Append`, enqueue one `ClickhouseRequest` with **raw** URL params + body (or forward client body verbatim).
-  - Still async `200` + empty body (unless P4.5).
-- **Effort:** ~2–4 days.
-- **Unlocks:** clickhouse-go HTTP `PrepareBatch`; connect `insert()` body format (still no sync errors).
+- **Status:** ✅ Auto-detect (`application/octet-stream`, `FORMAT Native` / `RowBinary` / `Parquet` / `Arrow` / … in `query=`) or `opaque_insert: true` for every INSERT. Skips collector batching; optional journal (`AppendOpaque`, base64 body); outbound POST preserves client `Content-Type` (default `application/octet-stream` for binary formats). Async `200` unchanged.
+- **Unlocks:** clickhouse-go HTTP `PrepareBatch`; connect `insert()` payload pass-through (errors still async until P4.5).
 
 ### P4.2 — Request decompression — open
 
@@ -200,7 +198,7 @@ Design principle: **default path unchanged** (batched text INSERT for Vector/cur
 ### Recommended implementation order
 
 1. P4.6 (docs) ✅  
-2. P4.1 opaque passthrough  
+2. ~~P4.1 opaque passthrough~~ ✅  
 3. P4.2 decompression  
 4. P4.4 hybrid formats  
 5. P4.3 headers (proxied, then passthrough if sync)  
@@ -211,3 +209,70 @@ Design principle: **default path unchanged** (batched text INSERT for Vector/cur
 - Native TCP on bulk port.
 - Merging multiple Native INSERT bodies into one batch.
 - Exactly-once or full `clickhouse-connect` feature parity (sessions, temporary tables, external data) without explicit design.
+
+---
+
+## P5 — Test coverage (optional)
+
+**Baseline:** `go test -cover ./...` ≈ **74%** (CI also runs `-race` on Coverage step).  
+**Existing suites:** `collector_test`, `opaque_test`, `dump_*`, `journal_*`, `config_test`, `server_test`, `clickhouse_test`, `dual_sender_test`, `rate_limiter_test`, `utils_log_test`.
+
+### Already well covered
+
+- Collector: `ParseQuery`, `Push`, `FlushAll`, `separateQuery`
+- Opaque P4.1: detection, HTTP passthrough, journal base64, `PushOpaque`
+- Config: env overrides, backup, path traversal, TLS
+- Dump (basic): write, 4xx → `failed/`, single `ReplayFailed` path
+- ClickHouse: server rotation, down detection, `SendQuery`, response body close
+
+### P5.1 — Ops HTTP API (0% today) — open
+
+| Area | Functions / handlers | Test ideas |
+|------|----------------------|------------|
+| `GET /status` | `statusHandler`, `buildTargetStatus`, `ServersSnapshot` | Live queue + servers; backup `enabled: false` vs dual-write |
+| `POST\|GET /debug/replay-failed` | `replayFailedHandler` | `target=live\|backup\|all`, `limit`, invalid limit → 400, backup disabled → 400 |
+| `GET /debug/tables-clean` | `tablesCleanHandler`, `CleanTables`, `CleanTable` | Empty table after flush removed from collector map |
+| `DualSender` | `SendQuery`, `Empty`, `WaitFlush` | Proxied SELECT hits live only; drain both queues after opaque sends |
+
+**Effort:** ~1 day. **Impact:** closes gaps in documented ops endpoints.
+
+### P5.2 — Journal, ClickHouse worker, dumps (<70%) — open
+
+| Area | Gaps | Test ideas |
+|------|------|------------|
+| Journal | `loadAcked`, `compactLocked`, `journal_fsync` | Restart with `ack.log`; compact keeps only pending; fsync on append/ack |
+| `clickhouse.Run` | `ackJournal` (~33%), fail → dump + ack | Mock CH 200 / 4xx / 502; journal IDs cleared on success or dump |
+| Dump replay | `ReplayFailed` (~53%), `effectiveReplayBatch`, `DeleteDump` retries | `limit` and `dump_replay_batch`; delete retry path |
+| `Listen` | periodic replay tick | Short interval + one pending `.dmp` |
+| Server | batched INSERT journal 500/503 | Same as opaque tests but text INSERT path |
+| `SafeQuit` | drain timeout branch | `shutdown_drain_sec` exceeded → WARN, exit |
+
+**Effort:** ~2–3 days.
+
+### P5.3 — Collector, metrics, config edges — open
+
+| Area | Gaps | Test ideas |
+|------|------|------------|
+| `Parse` | ~62% branches | VALUES, quoted FORMAT, RowBinary `Content()` delimiter |
+| Batching | `remove_query_id` | Two INSERTs, different `query_id` → one batch key |
+| Idle tables | `CleanInterval`, `RunTimer` | Timer flush / cleanup |
+| Opaque edge | body-only INSERT, BasicAuth on opaque path | Driver-style requests |
+| Metrics | `InitMetrics`, backup on/off, journal gauges | Smoke after send or scrape `/metrics` |
+| Config | `validateClickhouseConfig`, `backupDumpCheckInterval` | Empty server URL; bkp interval fallback |
+
+**Effort:** ~2 days.
+
+### P5.4 — Low ROI / deferred
+
+- `main()` — typically not unit-tested
+- Full `RunServer` SIGTERM e2e — integration test
+- P4.2+ features — test when implemented (`decompress`, `sync_insert`, etc.)
+
+### Recommended test order
+
+1. P5.1 — `/status`, `/debug/replay-failed`, `DualSender.SendQuery`, tables-clean  
+2. P5.2 — journal compact/fsync, `ackJournal` + dump paths, dump replay limits  
+3. P5.3 — `Parse` matrix, metrics smoke, config validation edges  
+4. P5.4 — as needed  
+
+**CI:** keep `go test -race -coverprofile=coverage.out` in [`.github/workflows/test.yml`](../.github/workflows/test.yml); optional coverage threshold gate later.
