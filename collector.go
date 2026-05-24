@@ -43,6 +43,7 @@ type Collector struct {
 	CleanInterval int
 	RemoveQueryID bool
 	OpaqueInsert  bool // force opaque passthrough for all INSERTs
+	BatchFormats  []string // when non-empty: only these FORMAT names are batched; others use opaque path
 	Sender        Sender
 	Journal       *Journal
 	TickerChan    *chan struct{}
@@ -59,7 +60,7 @@ func NewTable(name string, sender Sender, count int, interval int) (t *Table) {
 }
 
 // NewCollector - default collector constructor
-func NewCollector(sender Sender, journal *Journal, count int, interval int, cleanInterval int, removeQueryID bool, opaqueInsert bool) (c *Collector) {
+func NewCollector(sender Sender, journal *Journal, count int, interval int, cleanInterval int, removeQueryID bool, opaqueInsert bool, batchFormats []string) (c *Collector) {
 	c = new(Collector)
 	c.Sender = sender
 	c.Journal = journal
@@ -69,6 +70,7 @@ func NewCollector(sender Sender, journal *Journal, count int, interval int, clea
 	c.CleanInterval = cleanInterval
 	c.RemoveQueryID = removeQueryID
 	c.OpaqueInsert = opaqueInsert
+	c.BatchFormats = batchFormats
 	if cleanInterval > 0 {
 		c.TickerChan = c.RunTimer()
 	}

@@ -3,12 +3,12 @@ package main
 import (
 	"context"
 	"errors"
-	"io"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -23,16 +23,18 @@ import (
 
 // Server - main server object
 type Server struct {
-	Listen       string
-	Collector    *Collector
-	LiveSender   *Clickhouse
-	LiveDumper   *FileDumper
-	BackupSender *Clickhouse
-	BackupDumper *FileDumper
-	BackupOn     bool
-	Debug        bool
-	LogQueries   bool
-	echo         *echo.Echo
+	Listen          string
+	Collector       *Collector
+	LiveSender      *Clickhouse
+	LiveDumper      *FileDumper
+	BackupSender    *Clickhouse
+	BackupDumper    *FileDumper
+	BackupOn        bool
+	Debug           bool
+	LogQueries      bool
+	MaxRequestBytes int64
+	SyncInsert      bool
+	echo            *echo.Echo
 }
 
 // ReplayFailedResponse is returned by POST /debug/replay-failed.
@@ -60,7 +62,13 @@ func NewServer(listen string, collector *Collector, live *Clickhouse, backup *Cl
 }
 
 func (server *Server) writeHandler(c echo.Context) error {
-	body, _ := io.ReadAll(c.Request().Body)
+	body, err := readRequestBody(c.Request().Body, server.MaxRequestBytes)
+	if err != nil {
+		if errors.Is(err, ErrRequestTooLarge) {
+			return c.String(http.StatusRequestEntityTooLarge, "Request body too large\n")
+		}
+		return c.String(http.StatusBadRequest, "Request read failed\n")
+	}
 	qs := c.QueryString()
 	user, password, ok := c.Request().BasicAuth()
 	if ok {
@@ -70,6 +78,19 @@ func (server *Server) writeHandler(c echo.Context) error {
 			qs = "user=" + user + "&password=" + password + "&" + qs
 		}
 	}
+	contentEncoding := c.Request().Header.Get("Content-Encoding")
+	if needsDecompression(contentEncoding, qs) {
+		decompressed, newQS, derr := decompressRequestBody(body, contentEncoding, qs, server.MaxRequestBytes)
+		if derr != nil {
+			if errors.Is(derr, ErrRequestTooLarge) {
+				return c.String(http.StatusRequestEntityTooLarge, "Request body too large\n")
+			}
+			log.Printf("ERROR: request decompression: %+v\n", derr)
+			return c.String(http.StatusBadRequest, "Request decompression failed\n")
+		}
+		body = decompressed
+		qs = newQS
+	}
 	clientCT := c.Request().Header.Get("Content-Type")
 
 	if server.Debug {
@@ -77,8 +98,10 @@ func (server *Server) writeHandler(c echo.Context) error {
 			logInsertMeta(qs, string(body)), len(body), logTruncate(string(body), 64))
 	}
 
-	if shouldOpaqueInsert(server.Collector.OpaqueInsert, clientCT, qs, body) {
-		return server.acceptOpaqueInsert(c, qs, string(body), clientCT)
+	sync := wantsSyncInsert(server.SyncInsert, c.Request().Header)
+
+	if shouldOpaqueInsert(server.Collector.OpaqueInsert, server.Collector.BatchFormats, clientCT, qs, body) {
+		return server.acceptOpaqueInsert(c, qs, string(body), clientCT, sync)
 	}
 
 	s := string(body)
@@ -87,6 +110,9 @@ func (server *Server) writeHandler(c echo.Context) error {
 		if len(content) == 0 {
 			log.Printf("INFO: empty insert %s\n", logInsertMeta(params, content))
 			return c.String(http.StatusInternalServerError, "Empty insert\n")
+		}
+		if sync {
+			return server.acceptBatchedInsertSync(c, params, content)
 		}
 		var journalID uint64
 		if server.Collector.Journal != nil {
@@ -104,16 +130,25 @@ func (server *Server) writeHandler(c echo.Context) error {
 		go server.Collector.Push(params, content, journalID)
 		return c.String(http.StatusOK, "")
 	}
-	resp, status, _ := server.Collector.Sender.SendQuery(&ClickhouseRequest{Params: qs, Content: s, isInsert: false})
-	return c.String(status, resp)
+	resp, status, headers, _ := server.Collector.Sender.SendQuery(&ClickhouseRequest{Params: qs, Content: s, isInsert: false})
+	return writeProxiedQueryResponse(c, status, resp, headers)
 }
 
-func (server *Server) acceptOpaqueInsert(c echo.Context, params, content, clientCT string) error {
+func (server *Server) acceptOpaqueInsert(c echo.Context, params, content, clientCT string, sync bool) error {
 	if len(content) == 0 && queryFromParams(params) == "" {
 		log.Printf("INFO: empty opaque insert %s\n", logInsertMeta(params, content))
 		return c.String(http.StatusInternalServerError, "Empty insert\n")
 	}
 	outCT := outboundContentType(clientCT, insertQueryString(params, []byte(content)))
+	if sync {
+		journalID, err := server.appendOpaqueJournal(params, content, outCT)
+		if err != nil {
+			return server.journalAppendError(c, err)
+		}
+		pushCounter.Inc()
+		req := buildSyncOpaqueRequest(params, content, outCT, journalID)
+		return server.syncSendInsert(c, req)
+	}
 	var journalID uint64
 	if server.Collector.Journal != nil {
 		id, err := server.Collector.Journal.AppendOpaque(params, content, outCT)
@@ -262,6 +297,9 @@ func SafeQuit(collect *Collector, sender Sender, drainSec int) {
 			log.Printf("Draining send queue (%+v items pending)\n", count)
 		}
 		collect.WaitFlush()
+		if !sender.Empty() || !collect.Empty() {
+			time.Sleep(10 * time.Millisecond)
+		}
 	}
 }
 
@@ -295,8 +333,16 @@ func backupDumpCheckInterval(cnf Config) int {
 	return cnf.DumpCheckInterval
 }
 
-// RunServer - run all
+type exitCodeFn func(int)
+
+// RunServer wires journal, senders, HTTP server, and OS signal handling.
 func RunServer(cnf Config) {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+	runServer(cnf, signals, os.Exit)
+}
+
+func runServer(cnf Config, signals <-chan os.Signal, exit exitCodeFn) {
 	InitMetrics(cnf.MetricsPrefix, cnf.BackupEnabled())
 
 	journal, err := NewJournal(cnf.JournalDir, cnf.JournalFsync, cnf.MaxJournalPending)
@@ -326,7 +372,7 @@ func RunServer(cnf Config) {
 		startDumpReplay(liveDumper, liveSender, cnf.DumpCheckInterval, cnf.DumpReplayBatch)
 	}
 
-	collect := NewCollector(sender, journal, cnf.FlushCount, cnf.FlushInterval, cnf.CleanInterval, cnf.RemoveQueryID, cnf.OpaqueInsert)
+	collect := NewCollector(sender, journal, cnf.FlushCount, cnf.FlushInterval, cnf.CleanInterval, cnf.RemoveQueryID, cnf.OpaqueInsert, cnf.BatchFormats)
 
 	if journal != nil {
 		RegisterJournalMetrics()
@@ -341,10 +387,9 @@ func RunServer(cnf Config) {
 	}
 
 	// send collected data on SIGTERM and exit
-	signals := make(chan os.Signal)
-	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
-
 	srv := InitServer(cnf.Listen, collect, liveSender, liveDumper, backupSender, backupDumper, cnf.BackupEnabled(), cnf.Debug, cnf.LogQueries)
+	srv.MaxRequestBytes = cnf.MaxRequestBytes
+	srv.SyncInsert = cnf.SyncInsert
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -358,7 +403,7 @@ func RunServer(cnf Config) {
 		}
 		SafeQuit(collect, sender, cnf.ShutdownDrainSec)
 		log.Printf("Shutdown complete, exiting\n")
-		os.Exit(exitCode)
+		exit(exitCode)
 	}()
 
 	if cnf.OpaqueInsert {
@@ -366,11 +411,20 @@ func RunServer(cnf Config) {
 	} else {
 		log.Printf("Opaque INSERT passthrough: auto for FORMAT Native/RowBinary/… and application/octet-stream\n")
 	}
+	if len(cnf.BatchFormats) > 0 {
+		log.Printf("Hybrid batch formats: batched=%s; other INSERT formats use opaque passthrough\n",
+			strings.Join(cnf.BatchFormats, ", "))
+	}
+	if cnf.SyncInsert {
+		log.Printf("Sync INSERT: all INSERTs wait for ClickHouse response (sync_insert=true); per-request override: X-Bulk-Sync: 1\n")
+	} else {
+		log.Printf("Sync INSERT: per-request via X-Bulk-Sync: 1 header (global sync_insert=false)\n")
+	}
 	log.Printf("Server starting on %s\n", cnf.Listen)
 	err = srv.Start(cnf)
 	if err != nil && err != http.ErrServerClosed {
 		log.Printf("ListenAndServe: %+v\n", err)
 		SafeQuit(collect, sender, cnf.ShutdownDrainSec)
-		os.Exit(1)
+		exit(1)
 	}
 }

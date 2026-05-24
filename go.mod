@@ -1,8 +1,12 @@
 module github.com/itcrow/clickhouse-bulk
 
 require (
+	github.com/ClickHouse/ch-go v0.72.0
+	github.com/andybalholm/brotli v1.1.1
+	github.com/klauspost/compress v1.18.6
 	github.com/labstack/echo/v4 v4.15.2
 	github.com/nikepan/go-datastructures v1.0.32
+	github.com/pierrec/lz4/v4 v4.1.26
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1
 )
@@ -11,7 +15,10 @@ require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/go-faster/city v1.0.1 // indirect
+	github.com/go-faster/errors v0.7.1 // indirect
 	github.com/kr/text v0.2.0 // indirect
+	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/labstack/gommon v0.5.0 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.22 // indirect
