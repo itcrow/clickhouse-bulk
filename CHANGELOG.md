@@ -8,7 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **P4.6 Client samples:** [`examples/go_direct_ch.go`](../examples/go_direct_ch.go), [`examples/python_raw_insert.py`](../examples/python_raw_insert.py), [`examples/README.md`](../examples/README.md).
+- **P5.4 Low-ROI tests:** `runCLI()` (`main_test.go`); `runServer` SIGTERM e2e (`runserver_e2e_test.go`); removed leaky `RunServer` goroutine from `TestServer_MultiServer`.
+- **P4.4 Hybrid batch formats:** config `batch_formats` / `BATCH_FORMATS`; listed FORMAT names batched, others opaque passthrough. Tests in `batch_formats_test.go`.
+- **P4.5 Sync INSERT:** config `sync_insert` / `SYNC_INSERT` or header `X-Bulk-Sync: 1`; inline `SendQuery` to live; CH status/body/headers returned; journal ack after success/dump; dual-write backup async on live success. Tests in `sync_insert_test.go`.
+- **P4.3 Response header forwarding:** proxied (`SELECT`/DDL) queries return ClickHouse response headers to the client (`X-ClickHouse-Query-Id`, `X-ClickHouse-Summary`, `Content-Type`, …). `SendQuery` returns `http.Header`; `writeHandler` uses `writeProxiedQueryResponse`. Tests in `response_headers_test.go`.
+- **P4.2 Request decompression:** inbound `Content-Encoding` (gzip, deflate, zstd, lz4, snappy, br) and ClickHouse native blocks (`decompress=1`); config `max_request_bytes` / `MAX_REQUEST_BYTES` (default 128 MiB). Plain body forwarded to CH; `decompress=1` stripped from outbound params. Tests in `decompress_test.go`.
 - **P4.1 Opaque INSERT passthrough:** auto for `FORMAT Native` / `RowBinary` / `Parquet` / `Arrow` / … and `Content-Type: application/octet-stream`; config `opaque_insert` / `OPAQUE_INSERT` forces all INSERTs through passthrough. No batch merge; journal stores binary body as base64; outbound POST preserves `Content-Type`.
+- **P5 test coverage (~83%):** ops HTTP, journal/Run/dump paths, collector/metrics/config; new test files `server_ops_test`, `clickhouse_run_test`, `collector_extended_test`, `journal_extended_test`, `dump_extended_test`, `metrics_test`.
 - [docs/DOCKER.md](docs/DOCKER.md) — Docker Hub link, run/how-to, `docker push itcrow/clickhouse-bulk:tagname`.
 - Docs: [docs/CLIENT_COMPATIBILITY.md](docs/CLIENT_COMPATIBILITY.md) (clickhouse-go, clickhouse-connect); roadmap in [docs/ROADMAP.md](docs/ROADMAP.md).
 - Dependabot: `.github/dependabot.yml` (gomod, github-actions, docker; weekly).

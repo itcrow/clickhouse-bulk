@@ -35,8 +35,8 @@ func (s *recordingSender) Send(r *ClickhouseRequest) {
 	s.mu.Unlock()
 }
 
-func (s *recordingSender) SendQuery(r *ClickhouseRequest) (string, int, error) {
-	return "", http.StatusOK, nil
+func (s *recordingSender) SendQuery(r *ClickhouseRequest) (string, int, http.Header, error) {
+	return "", http.StatusOK, nil, nil
 }
 
 func (s *recordingSender) Len() int64 {
@@ -63,7 +63,7 @@ func TestShouldOpaqueInsert_Formats(t *testing.T) {
 	for _, format := range []string{"Native", "RowBinary", "Parquet", "Arrow", "ArrowStream", "ORC", "Protobuf"} {
 		t.Run(format, func(t *testing.T) {
 			q := url.QueryEscape("INSERT INTO t FORMAT " + format)
-			assert.True(t, shouldOpaqueInsert(false, "", "query="+q, body))
+			assert.True(t, shouldOpaqueInsert(false, nil, "", "query="+q, body))
 		})
 	}
 }
@@ -92,7 +92,7 @@ func TestOutboundContentType(t *testing.T) {
 
 func TestCollector_PushOpaque(t *testing.T) {
 	sender := &recordingSender{}
-	c := NewCollector(sender, nil, 1000, 1000, 0, true, false)
+	c := NewCollector(sender, nil, 1000, 1000, 0, true, false, nil)
 
 	params := "database=db&query=" + url.QueryEscape("INSERT INTO events FORMAT Native")
 	payload := string([]byte{0xca, 0xfe})
@@ -112,7 +112,7 @@ func TestCollector_PushOpaque(t *testing.T) {
 
 func TestCollector_ReplayJournalRecord_Opaque(t *testing.T) {
 	sender2 := &recordingSender{}
-	c2 := NewCollector(sender2, nil, 1000, 1000, 0, true, false)
+	c2 := NewCollector(sender2, nil, 1000, 1000, 0, true, false, nil)
 	raw := []byte{0x01, 0x02}
 	c2.ReplayJournalRecord(journalRecord{
 		ID:          2,
@@ -128,7 +128,7 @@ func TestCollector_ReplayJournalRecord_Opaque(t *testing.T) {
 
 func TestCollector_ReplayJournalRecord_Batched(t *testing.T) {
 	sender := &recordingSender{}
-	c := NewCollector(sender, nil, 10, 1000, 0, true, false)
+	c := NewCollector(sender, nil, 10, 1000, 0, true, false, nil)
 	params := "query=" + url.QueryEscape("INSERT INTO t FORMAT TabSeparated")
 	c.ReplayJournalRecord(journalRecord{ID: 1, Params: params, Content: "a\tb"})
 	c.ReplayJournalRecord(journalRecord{ID: 2, Params: params, Content: "c\td"})
@@ -142,7 +142,7 @@ func TestCollector_ReplayJournalRecord_Batched(t *testing.T) {
 
 func TestCollector_OpaqueInsertForceAll(t *testing.T) {
 	sender := &recordingSender{}
-	c := NewCollector(sender, nil, 1000, 1000, 0, true, true)
+	c := NewCollector(sender, nil, 1000, 1000, 0, true, true, nil)
 	params := "query=" + url.QueryEscape("INSERT INTO t FORMAT TabSeparated")
 	c.PushOpaque(params, "1\t2\n", "text/plain", 0)
 	require.Len(t, sender.requests, 1)
@@ -186,7 +186,7 @@ func TestJournal_AppendOpaqueReplay(t *testing.T) {
 	require.NoError(t, err)
 
 	sender := &recordingSender{}
-	c := NewCollector(sender, j, 1000, 1000, 0, true, false)
+	c := NewCollector(sender, j, 1000, 1000, 0, true, false, nil)
 	require.NoError(t, j.ReplayUnacked(c.ReplayJournalRecord))
 
 	require.Len(t, sender.requests, 1)
@@ -242,7 +242,7 @@ func TestServer_OpaquePassthrough_Native(t *testing.T) {
 
 	sender := NewClickhouse(10, 10, "", false, 0, 0)
 	sender.AddServer(ch.URL, false)
-	collector := NewCollector(sender, nil, 1000, 1000, 0, true, false)
+	collector := NewCollector(sender, nil, 1000, 1000, 0, true, false, nil)
 	srv := newOpaqueTestServer(t, collector, ch.URL)
 
 	nativeBody := "\x01\x02\x03\x04"
@@ -272,7 +272,7 @@ func TestServer_OpaquePassthrough_RowBinary(t *testing.T) {
 
 	sender := NewClickhouse(10, 10, "", false, 0, 0)
 	sender.AddServer(ch.URL, false)
-	collector := NewCollector(sender, nil, 1000, 1000, 0, true, false)
+	collector := NewCollector(sender, nil, 1000, 1000, 0, true, false, nil)
 	srv := newOpaqueTestServer(t, collector, ch.URL)
 
 	q := url.QueryEscape("INSERT INTO t FORMAT RowBinary")
@@ -290,7 +290,7 @@ func TestServer_OpaquePassthrough_RowBinary(t *testing.T) {
 
 func TestServer_OpaqueInsertConfigForceAll(t *testing.T) {
 	sender := &recordingSender{}
-	collector := NewCollector(sender, nil, 1000, 1000, 0, true, true)
+	collector := NewCollector(sender, nil, 1000, 1000, 0, true, true, nil)
 	e := newTestEchoServer(collector)
 
 	q := url.QueryEscape("INSERT INTO t FORMAT TabSeparated")
@@ -310,7 +310,7 @@ func TestServer_OpaqueInsertConfigForceAll(t *testing.T) {
 
 func TestServer_acceptOpaqueInsert_EmptyRejected(t *testing.T) {
 	sender := &recordingSender{}
-	collector := NewCollector(sender, nil, 1000, 1000, 0, true, false)
+	collector := NewCollector(sender, nil, 1000, 1000, 0, true, false, nil)
 	srv := &Server{Collector: collector}
 
 	e := echo.New()
@@ -318,7 +318,7 @@ func TestServer_acceptOpaqueInsert_EmptyRejected(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
 
-	err := srv.acceptOpaqueInsert(c, "", "", "")
+	err := srv.acceptOpaqueInsert(c, "", "", "", false)
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 	assert.Equal(t, "Empty insert\n", rec.Body.String())
@@ -327,7 +327,7 @@ func TestServer_acceptOpaqueInsert_EmptyRejected(t *testing.T) {
 
 func TestServer_OpaqueQueryOnlyEmptyBody(t *testing.T) {
 	sender := &recordingSender{}
-	collector := NewCollector(sender, nil, 1000, 1000, 0, true, false)
+	collector := NewCollector(sender, nil, 1000, 1000, 0, true, false, nil)
 	e := newTestEchoServer(collector)
 
 	// Query in URL, empty body — valid opaque passthrough (driver may send data in query only).
@@ -351,7 +351,7 @@ func TestServer_OpaqueWithJournal(t *testing.T) {
 	defer j.Close()
 
 	sender := &recordingSender{}
-	collector := NewCollector(sender, j, 1000, 1000, 0, true, false)
+	collector := NewCollector(sender, j, 1000, 1000, 0, true, false, nil)
 	e := newTestEchoServer(collector)
 
 	q := url.QueryEscape("INSERT INTO t FORMAT Native")
@@ -379,7 +379,7 @@ func TestServer_OpaqueJournalBacklog(t *testing.T) {
 	require.NoError(t, err)
 
 	sender := &recordingSender{}
-	collector := NewCollector(sender, j, 1000, 1000, 0, true, false)
+	collector := NewCollector(sender, j, 1000, 1000, 0, true, false, nil)
 	e := newTestEchoServer(collector)
 
 	code, resp := serveOpaquePOST(e, "/?query="+url.QueryEscape("INSERT INTO t FORMAT Native"), "\x01", "application/octet-stream")
@@ -389,7 +389,7 @@ func TestServer_OpaqueJournalBacklog(t *testing.T) {
 
 func TestServer_BatchedInsertNotOpaque(t *testing.T) {
 	sender := &recordingSender{}
-	collector := NewCollector(sender, nil, 2, 1000, 0, true, false)
+	collector := NewCollector(sender, nil, 2, 1000, 0, true, false, nil)
 	e := newTestEchoServer(collector)
 
 	q := url.QueryEscape("INSERT INTO table3 (c1, c2, c3) FORMAT TabSeparated")
@@ -461,7 +461,7 @@ func TestClickhouse_SendQuery_OpaqueContentType(t *testing.T) {
 
 	ch := NewClickhouse(10, 10, "", false, 0, 0)
 	ch.AddServer(srv.URL, false)
-	_, status, err := ch.SendQuery(&ClickhouseRequest{
+	_, status, _, err := ch.SendQuery(&ClickhouseRequest{
 		Params:      "query=" + url.QueryEscape("INSERT INTO t FORMAT Native"),
 		Content:     "\xff\xfe",
 		ContentType: "application/octet-stream",
@@ -485,4 +485,28 @@ func TestReadConfig_OpaqueInsert(t *testing.T) {
 	cnf, err := ReadConfig("non_existent_config.json")
 	require.NoError(t, err)
 	assert.True(t, cnf.OpaqueInsert)
+}
+
+func TestOpaque_BasicAuthAndBodyOnlyInsert(t *testing.T) {
+	sender := &recordingSender{}
+	collector := NewCollector(sender, nil, 1000, 1000, 0, true, false, nil)
+	e := newTestEchoServer(collector)
+
+	body := "INSERT INTO events FORMAT Native\n\x01\x02"
+	req := httptest.NewRequest(http.MethodPost, "/?database=db", strings.NewReader(body))
+	req.SetBasicAuth("user", "secret")
+	req.Header.Set("Content-Type", "application/octet-stream")
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for sender.Len() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	require.NotNil(t, sender.last())
+	assert.True(t, sender.last().opaque)
+	assert.Contains(t, sender.last().Params, "user=user")
+	assert.Contains(t, sender.last().Content, "FORMAT Native")
+	assert.Contains(t, sender.last().Content, "\x01\x02")
 }

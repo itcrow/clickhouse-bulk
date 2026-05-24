@@ -212,3 +212,17 @@ func TestTLSConfig(t *testing.T) {
 	assert.Equal(t, "override.com", cnf.Clickhouse.TLSServerName)
 	assert.False(t, cnf.Clickhouse.TLSSkipVerify)
 }
+
+func TestValidateClickhouseConfig_EmptyServerURL(t *testing.T) {
+	err := validateClickhouseConfig("clickhouse", clickhouseConfig{
+		Servers: []string{"http://ok:8123", "  "},
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "empty server URL")
+}
+
+func TestValidateClickhouseConfig_NoServers(t *testing.T) {
+	err := validateClickhouseConfig("clickhouse", clickhouseConfig{Servers: nil})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "no servers")
+}

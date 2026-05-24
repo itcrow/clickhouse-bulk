@@ -306,7 +306,7 @@ func (d *FileDumper) sendDumpPayload(sender Sender, data string) (status int, er
 	if content == "" && query == "" && params == "" {
 		return http.StatusOK, nil
 	}
-	_, st, sendErr := sender.SendQuery(&ClickhouseRequest{
+	_, st, _, sendErr := sender.SendQuery(&ClickhouseRequest{
 		Params: params, Query: query, Content: content, Count: rowCount, isInsert: true,
 	})
 	return st, sendErr

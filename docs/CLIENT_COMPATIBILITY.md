@@ -10,15 +10,15 @@ This document describes **current** behaviour and **planned** improvements. See 
 
 | Path | Detection | Client response | To ClickHouse |
 |------|-----------|-----------------|---------------|
-| **Batched INSERT** | Text `INSERT` (`TabSeparated`, `VALUES`, …) | `200` + **empty body** (async) | POST `text/plain` after flush |
-| **Opaque INSERT** (P4.1) | `FORMAT Native` / `RowBinary` / …, or `application/octet-stream`, or `opaque_insert` | `200` + **empty body** (async) | POST with client `Content-Type`, body verbatim |
-| **Proxied query** | Not `INSERT` | CH **status + body** (sync) | POST `text/plain`, same request |
-| **Dual-write** | Batched + opaque INSERT | Same async `200` | Live + backup queues |
+| **Batched INSERT** | Text `INSERT` (`TabSeparated`, `VALUES`, …) | `200` + **empty body** (async); or CH response with `X-Bulk-Sync: 1` / `sync_insert` (P4.5) | POST `text/plain` after flush (async) or inline (sync) |
+| **Opaque INSERT** (P4.1) | `FORMAT Native` / `RowBinary` / …, or `application/octet-stream`, or `opaque_insert` | `200` + **empty body** (async); or CH response with sync mode (P4.5) | POST with client `Content-Type`, body verbatim |
+| **Proxied query** | Not `INSERT` | CH **status + body + headers** (sync, P4.3) | POST `text/plain`, same request |
+| **Dual-write** | Batched + opaque INSERT | Async `200` by default; sync mode waits on live only (P4.5) | Live sync + backup async queue on live success |
 
 Important differences from direct `:8123`:
 
-- No forwarding of `X-ClickHouse-*` response headers to the client.
-- No request decompression (`Content-Encoding: lz4`, `gzip`, …).
+- **Async INSERT:** empty `200`, no CH headers. **Proxied** `SELECT`/DDL: headers forwarded (P4.3). **Sync INSERT** (`X-Bulk-Sync: 1` / `sync_insert`): CH status/body/headers (P4.5).
+- Request decompression (P4.2): `Content-Encoding` (`gzip`, `deflate`, `zstd`, `lz4`, `snappy`, `br`) and ClickHouse native blocks when `decompress=1` in query params. Decompressed plain body is forwarded to CH; `decompress=1` is stripped from outbound params.
 - Batched outbound POST uses `Content-Type: text/plain`. Opaque INSERT (P4.1) forwards `Content-Type` (e.g. `application/octet-stream`).
 - `remove_query_id: true` (default) strips `query_id` from the batching key.
 - With `journal_dir`, HTTP `200` means **WAL append**, not “row visible in CH”.
@@ -30,7 +30,7 @@ Important differences from direct `:8123`:
 | Client | Transport to bulk | Typical use with bulk | Works today? |
 |--------|-------------------|------------------------|--------------|
 | [clickhouse-go](https://github.com/ClickHouse/clickhouse-go) v2 | Native TCP `:9000` | Point driver at **ClickHouse**, not bulk | ✅ (bypass bulk) |
-| clickhouse-go v2 | HTTP `:8124` | Batch API / `PrepareBatch` | ⚠️ Opaque passthrough (P4.1); no compression (P4.2); async `200` |
+| clickhouse-go v2 | HTTP `:8124` | Batch API / `PrepareBatch` | ⚠️ Use `X-Bulk-Sync: 1` for driver-like errors (P4.5); else async `200` |
 | [clickhouse-connect](https://clickhouse.com/docs/integrations/python) | HTTP `:8124` | `query()` / `command()` | ✅ Good |
 | clickhouse-connect | HTTP `:8124` | `raw_insert` text formats, `compress=False` | ⚠️ Partial |
 | clickhouse-connect | HTTP `:8124` | `insert()` (Native default) | ❌ Poor |
@@ -54,7 +54,7 @@ Official driver: [ClickHouse/clickhouse-go](https://github.com/ClickHouse/clickh
 | API | Via bulk (`:8124`) | Notes |
 |-----|-------------------|--------|
 | `clickhouse.Open` / `OpenDB`, **Protocol: Native** (default) | N/A | Connect to ClickHouse directly — **best for Go apps** |
-| `Protocol: clickhouse.HTTP` + `PrepareBatch` / `AsyncInsert` | ⚠️ | P4.1 passes Native/octet-stream; **no** request decompression (P4.2); async accept |
+| `Protocol: clickhouse.HTTP` + `PrepareBatch` / `AsyncInsert` | ⚠️ | P4.1 passes Native/octet-stream; P4.2 decompresses LZ4/ZSTD native blocks (`decompress=1`) and HTTP gzip; async accept |
 | `Protocol: clickhouse.HTTP` + `Query` / `Exec` (SELECT, DDL) | ✅ | Sync proxy on **live**; backup not used |
 | `database/sql` over HTTP DSN | ❌ for `INSERT`; ✅ for reads | Same as above |
 
@@ -103,8 +103,8 @@ Official driver: [clickhouse-connect](https://clickhouse.com/docs/integrations/p
 |-----|----------|--------|
 | `get_client(host=bulk, port=8124)` + `query()` / `command()` | ✅ | Same as direct HTTP for non-INSERT |
 | `raw_insert(..., fmt='TabSeparated', compression=None)` | ⚠️ | Text INSERT can be batched; **no CH error returned** to Python; no summary headers |
-| `insert()` / `insert_df()` / Arrow | ⚠️ | P4.1 opaque passthrough; `compress=True` still unsupported (P4.2); async `200` hides CH errors |
-| `compress=True` (default possible) | ❌ | Bulk does not decompress request body |
+| `insert()` / `insert_df()` / Arrow | ⚠️ | P4.1 opaque; P4.2 decompress; use `X-Bulk-Sync: 1` for CH errors (P4.5) |
+| `compress=True` (default possible) | ⚠️ | P4.2: gzip/lz4/zstd/br/deflate decompressed inbound; tune `max_request_bytes` if needed |
 
 ### Example (partial compatibility)
 
@@ -152,8 +152,8 @@ client.raw_insert(
 |---------|-------------------|--------------|
 | INSERT batching across clients | No (per request) | Yes (by params key) |
 | INSERT response | CH body (`Ok.`, errors) | Empty `200` (queued) |
-| Response headers | Full | Not forwarded (insert); proxied queries: body only |
-| Request compression | Supported | Not supported |
+| Response headers | Full | Async INSERT: empty body. Sync INSERT + proxied queries: `X-ClickHouse-*` (P4.3/P4.5) |
+| Request compression | Supported (P4.2) | Decompress inbound; forward plain body to CH |
 | Native / octet-stream INSERT | Supported | Opaque passthrough (P4.1); no batch merge |
 | Journal before accept | No | Optional (`journal_dir`) |
 | Dual-write to standby | No (use CH replication) | Optional (`clickhouse-backup`) |
@@ -167,10 +167,10 @@ See [ROADMAP.md — P4 Client compatibility](./ROADMAP.md#p4--client-compatibili
 | Phase | Feature | Unlocks |
 |-------|---------|---------|
 | **P4.1** | Opaque INSERT passthrough ✅ | clickhouse-go HTTP batch, connect `insert()` payload pass-through (still async) |
-| **P4.2** | Request decompression; preserve `Content-Type` to CH | LZ4/gzip clients |
-| **P4.3** | Forward `X-ClickHouse-*` on proxied queries; optional on passthrough | Richer `QuerySummary` where CH returns headers |
-| **P4.4** | Config: `batch_formats` vs passthrough formats | Hybrid: batch TSV, passthrough Native |
-| **P4.5** | Optional `sync_insert` / `X-Bulk-Sync: 1` | Driver-like error propagation (throughput cost) |
+| **P4.2** | Request decompression; preserve `Content-Type` to CH | ✅ LZ4/ZSTD/gzip clients |
+| **P4.3** | Forward `X-ClickHouse-*` on proxied queries | ✅ `query()` / `command()` |
+| **P4.4** | Config: `batch_formats` vs passthrough formats | ✅ Hybrid: batch TSV/Values/JSONEachRow, passthrough Native |
+| **P4.5** | Optional `sync_insert` / `X-Bulk-Sync: 1` | ✅ Driver-like error propagation |
 
 **Non-goals:** replacing clickhouse-go/connect; batch-merging Native blocks; full transparent proxy without mode flags.
 
@@ -178,6 +178,7 @@ See [ROADMAP.md — P4 Client compatibility](./ROADMAP.md#p4--client-compatibili
 
 ## Related docs
 
+- [examples/](../examples/) — Go (direct CH) and Python (bulk `raw_insert`) samples
 - [DUAL_WRITE.md](./DUAL_WRITE.md) — architecture, journal, dumps
 - [RISKS.md](./RISKS.md) — operational risks (async `200`, backup lag)
 - [CONFIG.md](./CONFIG.md) — `remove_query_id`, `journal_dir`, dual-write

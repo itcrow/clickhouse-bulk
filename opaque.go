@@ -11,15 +11,43 @@ import (
 var opaqueFormatInQuery = regexp.MustCompile(`(?i)\bformat\s+(Native|RowBinary|Parquet|Arrow|ArrowStream|ORC|Protobuf)\b`)
 
 // shouldOpaqueInsert reports whether an INSERT should bypass collector batching.
-func shouldOpaqueInsert(forceAll bool, contentType, params string, body []byte) bool {
+func shouldOpaqueInsert(forceAll bool, batchFormats []string, contentType, params string, body []byte) bool {
 	if forceAll {
 		return isInsertParamsOrBody(params, body)
+	}
+	if len(batchFormats) > 0 {
+		if !isInsertParamsOrBody(params, body) {
+			return false
+		}
+		return !isListedBatchFormat(batchFormats, insertFormatFromQuery(params, body))
 	}
 	if isOctetStreamContentType(contentType) && isInsertParamsOrBody(params, body) {
 		return true
 	}
 	q := insertQueryString(params, body)
 	return q != "" && opaqueFormatInQuery.MatchString(q)
+}
+
+func insertFormatFromQuery(params string, body []byte) string {
+	q := insertQueryString(params, body)
+	if f := regexGetFormat.FindSubmatch([]byte(q)); len(f) > 1 {
+		return strings.TrimSpace(string(f[1]))
+	}
+	return formatValues
+}
+
+func isListedBatchFormat(batchFormats []string, format string) bool {
+	norm := normalizeFormatName(format)
+	for _, bf := range batchFormats {
+		if normalizeFormatName(bf) == norm {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeFormatName(format string) string {
+	return strings.ToLower(strings.TrimSpace(format))
 }
 
 func isInsertParamsOrBody(params string, body []byte) bool {

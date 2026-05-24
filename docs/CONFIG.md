@@ -18,6 +18,9 @@ Config file: JSON (default `config.json`). Override via environment variables (D
 | `clean_interval` | `CLICKHOUSE_CLEAN_INTERVAL` | `0` | Remove idle internal tables (ms); `0` = off |
 | `remove_query_id` | `CLICKHOUSE_REMOVE_QUERY_ID` | `true` | Strip `query_id` for batching |
 | `opaque_insert` | `OPAQUE_INSERT` | `false` | If `true`, every INSERT bypasses batching (opaque passthrough). Default: auto for `FORMAT Native` / `RowBinary` / … and `Content-Type: application/octet-stream` |
+| `batch_formats` | `BATCH_FORMATS` | *(unset)* | Comma-separated or JSON array. When set: only these `FORMAT` names are batched (`TabSeparated`, `Values`, `JSONEachRow`, …); all other INSERT formats use opaque passthrough (P4.4). Unset = legacy auto-detect |
+| `max_request_bytes` | `MAX_REQUEST_BYTES` | `134217728` (128 MiB) | Max decompressed request body; `0` = unlimited. Applies to compressed uploads (gzip, lz4, native blocks, …). HTTP 413 if exceeded |
+| `sync_insert` | `SYNC_INSERT` | `false` | If `true`, every INSERT waits for ClickHouse response (no batching). Per-request override: header `X-Bulk-Sync: 1`. Dual-write: sync live only, backup async. Low throughput — debug / driver-compat only |
 | `dump_check_interval` | `DUMP_CHECK_INTERVAL` | `300` | Live dump replay period (s); `-1` = off |
 | `bkp_dump_check_interval` | `BKP_DUMP_CHECK_INTERVAL` | `0` | Backup dump replay (s); `0` = use `dump_check_interval` |
 | `dump_replay_batch` | `DUMP_REPLAY_BATCH` | `0` | Max dump files replayed per tick per target; `0` = unlimited |
