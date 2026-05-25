@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Docker (hardened runtime):** distroless `static-debian12:nonroot`, non-root UID 65532, stripped static binary, `.dockerignore`; [docs/DOCKER.md](docs/DOCKER.md) run examples use `-config=…` args (no `./clickhouse-bulk` in container).
+
 ### Added
 
 - **P4.6 Client samples:** [`examples/go_direct_ch.go`](../examples/go_direct_ch.go), [`examples/python_raw_insert.py`](../examples/python_raw_insert.py), [`examples/README.md`](../examples/README.md).
