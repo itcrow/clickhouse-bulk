@@ -32,7 +32,7 @@ docker run -d -p 8124:8124 \
   -e CLICKHOUSE_SERVERS=http://127.0.0.1:8123 \
   -v "$(pwd)/config.json:/app/config.json:ro" \
   itcrow/clickhouse-bulk:latest \
-  ./clickhouse-bulk -config=/app/config.json
+  -config=/app/config.json
 ```
 
 **From source:**
