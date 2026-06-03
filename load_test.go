@@ -130,7 +130,7 @@ func startLoadFixture(t *testing.T, journalEnabled bool, flushCount, flushInterv
 		backupOn = true
 	}
 
-	collect := NewCollector(sender, journal, flushCount, flushInterval, 0, true)
+	collect := NewCollector(sender, journal, flushCount, flushInterval, 0, true, false, nil)
 	srv := InitServer("", collect, live, nil, backup, nil, backupOn, false, false)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -246,20 +246,6 @@ func loadTestProgressInterval(t *testing.T) time.Duration {
 		interval = d
 	}
 	return interval
-}
-
-func loadProgressBar(pct float64, width int) string {
-	if pct < 0 {
-		pct = 0
-	}
-	if pct > 100 {
-		pct = 100
-	}
-	filled := int(pct / 100 * float64(width))
-	if filled > width {
-		filled = width
-	}
-	return "[" + strings.Repeat("=", filled) + strings.Repeat("-", width-filled) + "]"
 }
 
 func runLoadProgressReporter(ctx context.Context, t *testing.T, totalDuration time.Duration, stats *loadStats, f *loadFixture, interval time.Duration, targetRPS float64, runtimeEnabled bool) {
@@ -463,7 +449,7 @@ func TestLoad_MockClickHouseReachable(t *testing.T) {
 	sql, err := dev.rowSQL(loadSensorInsertInto, 0, time.Now().Unix())
 	require.NoError(t, err)
 
-	_, status, err := f.sender.SendQuery(&ClickhouseRequest{
+	_, status, _, err := f.sender.SendQuery(&ClickhouseRequest{
 		Content:  sql,
 		Count:    1,
 		isInsert: true,
