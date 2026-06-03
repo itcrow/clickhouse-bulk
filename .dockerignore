@@ -1,0 +1,10 @@
+.git
+.github
+*.md
+docs/
+examples/
+coverage.out
+*.dmp
+dumps/
+journal/
+*.test

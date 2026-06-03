@@ -9,7 +9,7 @@ import (
 // Sender interface for send requests
 type Sender interface {
 	Send(r *ClickhouseRequest)
-	SendQuery(r *ClickhouseRequest) (response string, status int, err error)
+	SendQuery(r *ClickhouseRequest) (response string, status int, headers http.Header, err error)
 	Len() int64
 	Empty() bool
 	WaitFlush() (err error)
@@ -27,13 +27,13 @@ func (s *fakeSender) Send(r *ClickhouseRequest) {
 	s.sendHistory = append(s.sendHistory, logInsertMeta(r.Params, r.Content))
 }
 
-func (s *fakeSender) SendQuery(r *ClickhouseRequest) (response string, status int, err error) {
+func (s *fakeSender) SendQuery(r *ClickhouseRequest) (response string, status int, headers http.Header, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	meta := logInsertMeta(r.Params, r.Content)
 	s.sendQueryHistory = append(s.sendQueryHistory, meta)
 	log.Printf("DEBUG: send query #%d %s\n", len(s.sendQueryHistory), meta)
-	return "", http.StatusOK, nil
+	return "", http.StatusOK, nil, nil
 }
 
 func (s *fakeSender) Len() int64 {

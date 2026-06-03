@@ -32,6 +32,10 @@ type Config struct {
 	FlushInterval     int               `json:"flush_interval"`
 	CleanInterval     int               `json:"clean_interval"`
 	RemoveQueryID     bool              `json:"remove_query_id"`
+	OpaqueInsert      bool              `json:"opaque_insert"`
+	BatchFormats      []string          `json:"batch_formats"`
+	SyncInsert        bool              `json:"sync_insert"`
+	MaxRequestBytes   int64             `json:"max_request_bytes"`
 	DumpCheckInterval    int `json:"dump_check_interval"`
 	BkpDumpCheckInterval int `json:"bkp_dump_check_interval"`
 	DumpReplayBatch      int `json:"dump_replay_batch"`
@@ -75,6 +79,7 @@ func defaultConfig() Config {
 		FlushInterval:     1000,
 		CleanInterval:     0,
 		RemoveQueryID:     true,
+		MaxRequestBytes:   128 << 20, // 128 MiB decompressed request limit
 		DumpCheckInterval: 300,
 		DumpDir:           "dumps",
 		ShutdownDrainSec:  60,
@@ -124,6 +129,18 @@ func readEnvInt(name string, value *int) {
 	}
 }
 
+func readEnvInt64(name string, value *int64) {
+	s := os.Getenv(name)
+	if s != "" {
+		v, err := strconv.ParseInt(s, 10, 64)
+		if err != nil {
+			log.Printf("ERROR: Wrong %+v env: %+v\n", name, err)
+		} else {
+			*value = v
+		}
+	}
+}
+
 func readEnvBool(name string, value *bool) {
     s := os.Getenv(name)
     if s != "" {
@@ -153,6 +170,13 @@ func splitTrimServers(list string) []string {
 		}
 	}
 	return out
+}
+
+func readEnvStringList(name string, value *[]string) {
+	s := os.Getenv(name)
+	if s != "" {
+		*value = splitTrimServers(s)
+	}
 }
 
 func normalizeServerList(servers []string) []string {
@@ -255,6 +279,10 @@ func ReadConfig(configFile string) (Config, error) {
 	readEnvInt("CLICKHOUSE_FLUSH_INTERVAL", &cnf.FlushInterval)
 	readEnvInt("CLICKHOUSE_CLEAN_INTERVAL", &cnf.CleanInterval)
 	readEnvBool("CLICKHOUSE_REMOVE_QUERY_ID", &cnf.RemoveQueryID)
+	readEnvBool("OPAQUE_INSERT", &cnf.OpaqueInsert)
+	readEnvStringList("BATCH_FORMATS", &cnf.BatchFormats)
+	readEnvBool("SYNC_INSERT", &cnf.SyncInsert)
+	readEnvInt64("MAX_REQUEST_BYTES", &cnf.MaxRequestBytes)
 	readEnvInt("DUMP_CHECK_INTERVAL", &cnf.DumpCheckInterval)
 	readEnvInt("BKP_DUMP_CHECK_INTERVAL", &cnf.BkpDumpCheckInterval)
 	readEnvInt("DUMP_REPLAY_BATCH", &cnf.DumpReplayBatch)

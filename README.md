@@ -32,7 +32,7 @@ docker run -d -p 8124:8124 \
   -e CLICKHOUSE_SERVERS=http://127.0.0.1:8123 \
   -v "$(pwd)/config.json:/app/config.json:ro" \
   itcrow/clickhouse-bulk:latest \
-  ./clickhouse-bulk -config=/app/config.json
+  -config=/app/config.json
 ```
 
 **From source:**
@@ -53,6 +53,7 @@ Send INSERTs to `http://127.0.0.1:8124` (not the native ClickHouse port unless y
 | [docs/DUAL_WRITE.md](docs/DUAL_WRITE.md) | Architecture, journal, dumps, guarantees |
 | [docs/RISKS.md](docs/RISKS.md) | Operational risks by mode (live / journal / dual-write) |
 | [docs/CLIENT_COMPATIBILITY.md](docs/CLIENT_COMPATIBILITY.md) | clickhouse-go, clickhouse-connect, HTTP driver fit |
+| [examples/](examples/) | Go (direct CH) and Python (bulk `raw_insert`) samples |
 | [docs/DOCKER.md](docs/DOCKER.md) | Docker Hub, run, volumes, build/push |
 | [docs/CONFIG.md](docs/CONFIG.md) | Full config and env reference |
 | [docs/ALERTS.md](docs/ALERTS.md) | Prometheus alert examples |

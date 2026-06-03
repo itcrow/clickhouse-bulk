@@ -1,6 +1,22 @@
-FROM alpine:3
+# syntax=docker/dockerfile:1
+# Runtime image for GoReleaser (linux/amd64|arm64 binary + config in build context).
+
+FROM alpine:3.21 AS runtime-prep
+
+RUN mkdir -p /app/dumps /app/dumps-bkp /app/journal \
+    && chown -R 65532:65532 /app
+
 WORKDIR /app
-COPY config.sample.json .
-COPY clickhouse-bulk .
+COPY --chown=65532:65532 clickhouse-bulk config.sample.json ./
+RUN chmod 755 /app/clickhouse-bulk
+
+FROM gcr.io/distroless/static-debian12:nonroot
+
+WORKDIR /app
+COPY --from=runtime-prep --chown=nonroot:nonroot /app/ /app/
+
 EXPOSE 8124
-ENTRYPOINT ["./clickhouse-bulk", "-config=config.sample.json"]
+VOLUME ["/app/dumps", "/app/dumps-bkp", "/app/journal"]
+
+ENTRYPOINT ["/app/clickhouse-bulk"]
+CMD ["-config=/app/config.sample.json"]

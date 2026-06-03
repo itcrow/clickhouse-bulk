@@ -4,6 +4,7 @@
   "flush_interval": 1000,
   "clean_interval": 0,
   "remove_query_id": true,
+  "max_request_bytes": 134217728,
   "dump_check_interval": 300,
   "bkp_dump_check_interval": 0,
   "dump_replay_batch": 10,

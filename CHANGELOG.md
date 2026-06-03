@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Docker (hardened runtime):** distroless `static-debian12:nonroot`, non-root UID 65532, stripped static binary, `.dockerignore`; [docs/DOCKER.md](docs/DOCKER.md) run examples use `-config=…` args (no `./clickhouse-bulk` in container).
+
 ### Added
 
 - **Sustained load test:** dual-write by default; SQL `INSERT … VALUES` sensor fleet; [docs/LOAD_TEST.md](docs/LOAD_TEST.md); `LOAD_TEST=1` / `make loadtest`.

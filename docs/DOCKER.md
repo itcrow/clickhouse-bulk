@@ -28,7 +28,7 @@ docker run -d --name clickhouse-bulk \
   -v clickhouse-bulk-dumps:/app/dumps \
   -v clickhouse-bulk-journal:/app/journal \
   itcrow/clickhouse-bulk:latest \
-  ./clickhouse-bulk -config=/app/config.json
+  -config=/app/config.json
 ```
 
 Send INSERTs to `http://localhost:8124/` (not ClickHouse port 8123 unless you proxy).
@@ -56,7 +56,7 @@ docker run -d --name clickhouse-bulk \
   -v clickhouse-bulk-data:/app/dumps \
   -v clickhouse-bulk-journal:/app/journal \
   itcrow/clickhouse-bulk:latest \
-  ./clickhouse-bulk -config=/app/config.json
+  -config=/app/config.json
 ```
 
 ### Environment variables only
@@ -86,7 +86,7 @@ docker run -d --name clickhouse-bulk \
   -v bulk-dumps-bkp:/app/dumps-bkp \
   -v bulk-journal:/app/journal \
   itcrow/clickhouse-bulk:latest \
-  ./clickhouse-bulk -config=/app/config.json
+  -config=/app/config.json
 ```
 
 ---
@@ -116,7 +116,7 @@ services:
       - ./config.json:/app/config.json:ro
       - bulk-dumps:/app/dumps
       - bulk-journal:/app/journal
-    command: ["./clickhouse-bulk", "-config=/app/config.json"]
+    command: ["-config=/app/config.json"]
     environment:
       CLICKHOUSE_SERVERS: http://clickhouse:8123
     depends_on:
@@ -166,10 +166,14 @@ docker push itcrow/clickhouse-bulk:tagname
 
 ## Image details
 
-- Base runtime: `alpine:3` + `ca-certificates`
+- **Hardened runtime:** [distroless `static-debian12:nonroot`](https://github.com/GoogleContainerTools/distroless) — no shell, no package manager, runs as UID **65532** (`nonroot`)
+- **Builder / layout:** multi-stage build ([Dockerfile](../Dockerfile)); release images use [Dockerfile.goreleaser](../Dockerfile.goreleaser) with the same runtime stage
+- Static Go binary (`CGO_ENABLED=0`, `-trimpath`, stripped symbols)
+- CA certificates for HTTPS to ClickHouse are included in the distroless base
+- Writable dirs created at image build: `/app/dumps`, `/app/dumps-bkp` (dual-write / `bkp_dump_dir`), `/app/journal` (also declared as `VOLUME`)
 - Exposed port: **8124** (bulk HTTP; config `listen`)
-- Default command: `./clickhouse-bulk -config=config.sample.json`
-- GoReleaser image: [Dockerfile.goreleaser](../Dockerfile.goreleaser) (binary only, same layout)
+- Default: `ENTRYPOINT ["/app/clickhouse-bulk"]` + `CMD ["-config=/app/config.sample.json"]`
+- Override config: pass args after the image name, e.g. `docker run … itcrow/clickhouse-bulk:latest -config=/app/config.json` (do not use `./clickhouse-bulk`; there is no shell in the image)
 
 ---
 

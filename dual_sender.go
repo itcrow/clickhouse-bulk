@@ -1,5 +1,9 @@
 package main
 
+import (
+	"net/http"
+)
+
 // DualSender sends inserts to live ClickHouse first, then enqueues the same batch for backup.
 // Each target has its own Clickhouse worker queue and FileDumper directory.
 type DualSender struct {
@@ -20,7 +24,7 @@ func (d *DualSender) Send(r *ClickhouseRequest) {
 }
 
 // SendQuery is routed to live only (SELECT/DDL are not replicated to backup).
-func (d *DualSender) SendQuery(r *ClickhouseRequest) (response string, status int, err error) {
+func (d *DualSender) SendQuery(r *ClickhouseRequest) (response string, status int, headers http.Header, err error) {
 	return d.live.SendQuery(r)
 }
 
