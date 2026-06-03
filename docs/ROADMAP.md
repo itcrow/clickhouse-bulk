@@ -11,7 +11,8 @@ See [DUAL_WRITE.md](./DUAL_WRITE.md), [RISKS.md](./RISKS.md), [CONFIG.md](./CONF
 
 ### 1. HTTP `200 OK` before data is actually written — **done**
 
-- **Status:** ✅ **Journal (WAL)** when `journal_dir` is set: append before `200`, replay unacked on startup, `ack` when live batch is on ClickHouse **or** in `dump_dir` (not backup-only). Empty `journal_dir` = legacy behavior.
+- **Status:** ✅ **Journal (WAL)** when `journal_enabled` + `journal_dir`: append before `200`, replay unacked on startup, `ack` when live batch is on ClickHouse **or** in `dump_dir` (not backup-only). Opt-in via `journal_enabled` (default off).
+- **Known limitation:** Sync WAL append + compact-on-every-`Ack` limits ingest RPS under load; see **P5 — Journal performance**.
 
 ### 2. Graceful shutdown does not drain queues — **done**
 
@@ -128,6 +129,105 @@ See [DUAL_WRITE.md](./DUAL_WRITE.md), [RISKS.md](./RISKS.md), [CONFIG.md](./CONF
 6. P1.06 replay rate limit (optional)  
 7. ~~P0.01 journal~~ ✅  
 8. ~~P3.17, P3.20–21~~ ✅  
+9. ~~P5.1 journal quick wins (async compact, in-memory pending)~~ ✅  
+10. P5.2 journal Redis-style durability (`everysec` / snapshot+delta)  
+11. ~~P6 load test toolkit~~ ✅ (see [LOAD_TEST.md](./LOAD_TEST.md))
+
+---
+
+## P5 — Journal performance (Redis-style WAL)
+
+**Problem:** Current `journal.go` serializes all HTTP accepts on one mutex: each `Append` writes JSON to `wal.jsonl` before `200`; each `Ack` runs full WAL **compact** (read + rewrite file). Under ~300–500 RPS this dominates latency (`max_lat` grows, `ok_rps` ≪ `sent_rps`) even when sender `queue=0`.
+
+**Goal:** Keep crash recovery and `ack` semantics, but decouple hot path from disk like Redis persistence (AOF / RDB / mixed).
+
+### P5.1 — Quick wins (no contract change) — **done**
+
+- **Async compact:** `Ack` no longer rewrites WAL every time; compact when `≥100` acks or `≥5s` since last compact; always on `Compact()` / `Close()`.
+- **In-memory pending count:** `max_journal_pending` and `PendingCount` use counter (one disk scan at startup).
+- **Buffered WAL:** `bufio.Writer`; `Flush` each append, `Sync` when `journal_fsync`.
+- **Open ack file:** `ack.jsonl` kept open across `Ack` calls.
+
+### P5.2 — In-memory log + periodic delta flush (Redis AOF-like) — **open**
+
+- **Model:** Hot path appends to in-memory log (id, params, content); background flusher writes **delta** (`wal.delta.jsonl`) on interval / bytes / record count.
+- **Durability modes** (`journal_durability`, analogous to Redis `appendfsync`):
+
+| Mode | HTTP `200` after | Crash loss window |
+|------|------------------|-------------------|
+| `sync` | fsync to disk (current behaviour) | ~0 |
+| `everysec` | memory append | up to `journal_flush_interval` (e.g. 1s) |
+| `nosync` | memory append | unflushed buffer + no fsync |
+
+- **Config (proposal):** `journal_durability`, `journal_flush_interval_ms`, `journal_flush_bytes`, `journal_flush_records`, `journal_fsync`.
+- **Metrics (proposal):** `ch_journal_unflushed_records`, `ch_journal_last_flush_age_sec`, `ch_journal_flushed_up_to_id`.
+- **Docs:** Update [DUAL_WRITE.md](./DUAL_WRITE.md), [RISKS.md](./RISKS.md), [CONFIG.md](./CONFIG.md) — `200` ≠ “on disk” when not `sync`.
+- **Effort:** ~1 week (flusher goroutine, shutdown flush, replay from delta + memory watermark).
+
+### P5.3 — Snapshot + delta (Redis mixed / RDB + AOF tail) — **open**
+
+- **Model:** Periodic **snapshot** of all pending (unacked) records → `snapshot-<id>.bin` (+ `manifest.json` with `snapshot_max_id`); delta file holds only records with `id > snapshot_max_id`.
+- **Recovery:** Load snapshot → replay delta tail → replay on startup same as today for unacked.
+- **Config (proposal):** `journal_snapshot_mode`: `off` | `delta` | `snapshot` | `mixed`; `journal_snapshot_interval_sec`, optional size trigger.
+- **Benefit:** Fast startup and compact when WAL grows large; less full-file rewrite.
+- **Effort:** ~1–2 weeks after P5.2.
+- **Depends on:** P5.2 delta format and manifest.
+
+### P5.4 — Ack path decoupled from compact — **open**
+
+- Ack marks ids in memory (+ optional append-only `ack.delta`); compact/snapshot in background only.
+- **Effort:** Included in P5.1 / P5.2.
+
+### P5 recommended order
+
+1. ~~P5.1 quick wins~~ ✅  
+2. P5.2 `everysec` durability (product decision on `200` meaning)  
+3. P5.3 snapshot + mixed mode  
+4. Load-test validation: journal crash/replay test (new)
+
+### Operational mitigations (today, no code)
+
+- `journal_fsync: false`, journal on local SSD, higher `flush_count`, tune `send_max_rps` / `max_journal_pending`, `LOAD_TEST_*` to reproduce bottlenecks — see [LOAD_TEST.md](./LOAD_TEST.md).
+
+---
+
+## P6 — Load testing toolkit
+
+Optional sustained load test against in-process bulk + mock ClickHouse (dual-write by default). Not run in default CI. Full guide: [LOAD_TEST.md](./LOAD_TEST.md).
+
+### P6.1 — Core harness — **done**
+
+- `TestLoad_SustainedInsert` opt-in via `LOAD_TEST=1`.
+- SQL `INSERT … VALUES` payload (air-quality sensor template), many MACs, target RPS (`LOAD_TEST_RPS`), async client (default) vs `LOAD_TEST_SYNC=1`.
+- Dual-write fixture, optional journal (`LOAD_TEST_JOURNAL`), `LOAD_TEST_LIVE_ONLY`.
+
+### P6.2 — Mock ClickHouse tuning — **done**
+
+- **Delay:** `LOAD_TEST_CH_DELAY` (+ `_LIVE` / `_BACKUP`, `_JITTER`) — simulates slow CH; watch `queue=` grow.
+- **Outage:** `LOAD_TEST_CH_DOWN=always|window` (+ `_AFTER`, `_FOR`, `_STATUS`, per-target `_LIVE` / `_BACKUP`) — simulates CH unavailable (503, sender `Bad`, dumps).
+- **Sender timeouts:** `LOAD_TEST_CH_CONNECT_TIMEOUT`, `LOAD_TEST_CH_DOWN_TIMEOUT` (fixture defaults 60s / 10s).
+
+### P6.3 — Progress, time, parsing — **done**
+
+- Wall-clock **`ts=`** (RFC3339) on each progress line.
+- Machine line **`LOAD_PROGRESS`** (key=value) for scripts: `elapsed_sec`, `sent_rps`, `ok_rps`, `queue`, `inflight`, `live_batches`, `backup_batches`, `max_lat_ms`, optional heap/cpu.
+- **`LOAD_TEST_MEMSTATS=1`:** heap, goroutines, `cpu_cores` in progress.
+
+### P6.4 — Profiling — **done**
+
+- `LOAD_TEST_PROFILE=1` / `LOAD_TEST_PROFILE_DIR` → `cpu.prof`, `heap-load.prof`, `heap-drain.prof`.
+
+### P6.5 — Suite & charts — **done**
+
+- **`make loadtest-suite`** (default): 2× **2h** — `no-journal` + `journal`, backup `LOAD_TEST_CH_DELAY_BACKUP=200ms` + `JITTER=800ms`, 500 RPS; `make loadtest-suite-quick` for 45s cases.
+- `scripts/run-loadtest-cases.sh`, `scripts/loadtest_plot.py` — logs, `metrics.csv`, PNG charts.
+
+### P6.6 — Future (optional) — **open**
+
+- CI job (nightly) with short suite only.
+- Crash test: kill process mid-load, verify journal replay (`everysec` window).
+- Real ClickHouse target (not mock) behind env flag.
+- Graph comparison across git revisions.
 
 ---
 
@@ -142,7 +242,9 @@ See [DUAL_WRITE.md](./DUAL_WRITE.md), [RISKS.md](./RISKS.md), [CONFIG.md](./CONF
 | `query_params` for backup | ✅ |
 | `config.sample-backup.json` | ✅ |
 | Journal (P0.01) | ✅ |
-| Roadmap items (open above) | P1.06, P4 (client compatibility) |
+| Journal performance (P5) | P5.1 ✅; P5.2–P5.3 open |
+| Load test toolkit (P6) | ✅ |
+| Roadmap items (open above) | P1.06, P4, P5 |
 
 ---
 

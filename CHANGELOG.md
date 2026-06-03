@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Sustained load test:** dual-write by default; SQL `INSERT … VALUES` sensor fleet; [docs/LOAD_TEST.md](docs/LOAD_TEST.md); `LOAD_TEST=1` / `make loadtest`.
+
+### Changed
+
+- **Journal opt-in flag:** `journal_enabled` / `JOURNAL_ENABLED` (default `false`); WAL active only when enabled. `journal_dir` alone no longer turns journal on. Samples omit journal; startup logs `Journal disabled` unless the flag is set.
+
+### Added
+
 - [docs/DOCKER.md](docs/DOCKER.md) — Docker Hub link, run/how-to, `docker push itcrow/clickhouse-bulk:tagname`.
 - Docs: [docs/CLIENT_COMPATIBILITY.md](docs/CLIENT_COMPATIBILITY.md) (clickhouse-go, clickhouse-connect); roadmap in [docs/ROADMAP.md](docs/ROADMAP.md).
 - Dependabot: `.github/dependabot.yml` (gomod, github-actions, docker; weekly).

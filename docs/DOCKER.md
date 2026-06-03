@@ -16,7 +16,7 @@ Releases are built by [GoReleaser](../.github/workflows/release.yml) on git tags
 
 ## Quick run
 
-Bulk listens on **8124** by default (`listen` in config). The container ships with `config.sample.json` (live + journal); override for production.
+Bulk listens on **8124** by default (`listen` in config). The container ships with `config.sample.json` (journal **off** by default); override for production.
 
 ```bash
 docker pull itcrow/clickhouse-bulk:latest
@@ -67,7 +67,7 @@ Many settings can be set without editing JSON — see [CONFIG.md](./CONFIG.md). 
 docker run -d --name clickhouse-bulk \
   -p 8124:8124 \
   -e CLICKHOUSE_SERVERS=http://clickhouse:8123 \
-  -e JOURNAL_DIR= \
+  -e JOURNAL_ENABLED=false \
   -v clickhouse-bulk-dumps:/app/dumps \
   itcrow/clickhouse-bulk:latest
 ```

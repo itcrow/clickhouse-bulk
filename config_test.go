@@ -53,6 +53,8 @@ func TestReadConfig(t *testing.T) {
 	assert.Equal(t, 300, cnf.DumpCheckInterval)
 	assert.True(t, cnf.RemoveQueryID)
 	assert.Equal(t, []string{"http://127.0.0.1:8123"}, cnf.Clickhouse.Servers)
+	assert.Empty(t, cnf.JournalDir)
+	assert.False(t, cnf.JournalEnabled)
 }
 
 func TestDefaultValues(t *testing.T) {
@@ -75,6 +77,8 @@ func TestDefaultValues(t *testing.T) {
 	assert.Equal(t, 0, cnf.CleanInterval)
 	assert.False(t, cnf.Debug)
 	assert.Equal(t, 60, cnf.Clickhouse.DownTimeout)
+	assert.Empty(t, cnf.JournalDir)
+	assert.False(t, cnf.JournalEnabled)
 }
 
 func TestEnvOverrides(t *testing.T) {
@@ -106,6 +110,8 @@ func TestConfigFileStructure(t *testing.T) {
 	assert.NotEmpty(t, cnf.Listen)
 	assert.Greater(t, cnf.FlushCount, 0)
 	assert.Greater(t, len(cnf.Clickhouse.Servers), 0)
+	assert.Empty(t, cnf.JournalDir, "journal is opt-in; sample config must leave journal_dir empty")
+	assert.False(t, cnf.JournalEnabled, "journal is opt-in; sample config must leave journal_enabled false")
 }
 
 func TestBackupConfig(t *testing.T) {
@@ -140,6 +146,36 @@ func TestBackupConfig(t *testing.T) {
 
 func TestSplitTrimServers(t *testing.T) {
 	assert.Equal(t, []string{"http://a", "http://b"}, splitTrimServers("http://a, http://b , "))
+}
+
+func TestEffectiveJournalDir(t *testing.T) {
+	off := Config{JournalEnabled: false, JournalDir: "/journal"}
+	assert.Empty(t, off.EffectiveJournalDir())
+
+	on := Config{JournalEnabled: true, JournalDir: "/data/wal"}
+	assert.Equal(t, "/data/wal", on.EffectiveJournalDir())
+
+	def := Config{JournalEnabled: true, JournalDir: ""}
+	assert.Equal(t, "journal", def.EffectiveJournalDir())
+}
+
+func TestReadConfig_JournalEnabled(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "test_journal_flag_*.json")
+	assert.NoError(t, err)
+	defer os.Remove(tmpFile.Name())
+
+	_, err = tmpFile.WriteString(`{
+		"journal_enabled": true,
+		"journal_dir": "/var/journal",
+		"clickhouse": {"servers": ["http://127.0.0.1:8123"]}
+	}`)
+	assert.NoError(t, err)
+	tmpFile.Close()
+
+	cnf, err := ReadConfig(tmpFile.Name())
+	assert.NoError(t, err)
+	assert.True(t, cnf.JournalEnabled)
+	assert.Equal(t, "/var/journal", cnf.EffectiveJournalDir())
 }
 
 func TestMergeQueryParams(t *testing.T) {

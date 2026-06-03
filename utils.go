@@ -38,6 +38,7 @@ type Config struct {
 	MaxDumpFiles         int `json:"max_dump_files"`
 	DumpDir              string `json:"dump_dir"`
 	BkpDumpDir           string `json:"bkp_dump_dir"`
+	JournalEnabled       bool   `json:"journal_enabled"`
 	JournalDir           string `json:"journal_dir"`
 	JournalFsync         bool   `json:"journal_fsync"`
 	MaxJournalPending    int    `json:"max_journal_pending"`
@@ -55,6 +56,18 @@ func (c Config) BackupEnabled() bool {
 	return c.ClickhouseBackup != nil && len(c.ClickhouseBackup.Servers) > 0
 }
 
+// EffectiveJournalDir returns the WAL directory when journal is enabled, or "" when disabled.
+// If journal is enabled and journal_dir is empty, defaults to "journal".
+func (c Config) EffectiveJournalDir() string {
+	if !c.JournalEnabled {
+		return ""
+	}
+	if c.JournalDir != "" {
+		return c.JournalDir
+	}
+	return "journal"
+}
+
 func defaultConfig() Config {
 	return Config{
 		Listen:            ":8124",
@@ -65,6 +78,7 @@ func defaultConfig() Config {
 		DumpCheckInterval: 300,
 		DumpDir:           "dumps",
 		ShutdownDrainSec:  60,
+		JournalEnabled:    false,
 		JournalDir:        "",
 		JournalFsync:      false,
 		Debug:             false,
@@ -167,6 +181,7 @@ func mergeQueryParams(base, extra string) string {
 // validateLocalDataDir normalizes admin-configured local paths and rejects traversal (..).
 // Empty dir disables that feature (e.g. journal_dir "").
 func validateLocalDataDir(dir, field string) (string, error) {
+	dir = strings.TrimSpace(dir)
 	if dir == "" {
 		return "", nil
 	}
@@ -247,6 +262,7 @@ func ReadConfig(configFile string) (Config, error) {
 	readEnvString("DUMP_DIR", &cnf.DumpDir)
 	readEnvString("CLICKHOUSE_BKP_DUMP_DIR", &cnf.BkpDumpDir)
 	readEnvInt("SHUTDOWN_DRAIN_SEC", &cnf.ShutdownDrainSec)
+	readEnvBool("JOURNAL_ENABLED", &cnf.JournalEnabled)
 	readEnvString("JOURNAL_DIR", &cnf.JournalDir)
 	readEnvBool("JOURNAL_FSYNC", &cnf.JournalFsync)
 	readEnvInt("MAX_JOURNAL_PENDING", &cnf.MaxJournalPending)

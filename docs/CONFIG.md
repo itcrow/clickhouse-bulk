@@ -4,7 +4,7 @@ Config file: JSON (default `config.json`). Override via environment variables (D
 
 **Precedence:** defaults → JSON file → environment variables.
 
-**Local data paths** (`journal_dir`, `dump_dir`, `bkp_dump_dir`): validated at startup — paths are `filepath.Clean`’d; values containing `..` are rejected. Empty `journal_dir` disables the journal.
+**Local data paths** (`journal_dir`, `dump_dir`, `bkp_dump_dir`): validated at startup — paths are `filepath.Clean`’d; values containing `..` are rejected. Journal is active only when `journal_enabled` is `true`; `journal_dir` alone does not turn it on.
 
 **Dump file ids** (replay / read): only a basename or `failed/<basename>` is allowed; `..` and nested paths are rejected (`ErrInvalidDumpID`).
 
@@ -23,7 +23,8 @@ Config file: JSON (default `config.json`). Override via environment variables (D
 | `max_dump_files` | `MAX_DUMP_FILES` | `0` | Max pending `.dmp` per dir; oldest pruned; `0` = unlimited |
 | `dump_dir` | `DUMP_DIR` | `dumps` | Live failed-batch directory |
 | `bkp_dump_dir` | `CLICKHOUSE_BKP_DUMP_DIR` | `dumps-bkp` | Backup failed-batch directory |
-| `journal_dir` | `JOURNAL_DIR` | `""` | WAL directory; empty = journal disabled |
+| `journal_enabled` | `JOURNAL_ENABLED` | `false` | Enable WAL before HTTP `200` |
+| `journal_dir` | `JOURNAL_DIR` | `""` | WAL directory (used only if `journal_enabled`; default `journal` when enabled and empty) |
 | `journal_fsync` | `JOURNAL_FSYNC` | `false` | `fsync` after each WAL append |
 | `max_journal_pending` | `MAX_JOURNAL_PENDING` | `0` | Max unacked WAL rows; `0` = unlimited; full → HTTP 503 |
 | `shutdown_drain_sec` | `SHUTDOWN_DRAIN_SEC` | `60` | Max time to flush queues on SIGTERM/SIGINT |
@@ -63,7 +64,7 @@ Env for backup timeouts/TLS: `CLICKHOUSE_BACKUP_DOWN_TIMEOUT`, `CLICKHOUSE_BACKU
 
 | File | Use case |
 |------|----------|
-| `config.sample.json` | Live only + journal |
+| `config.sample.json` | Live only (journal off by default) |
 | `config.sample-backup.json` | Live + backup dual-write |
 
 ## Related docs
