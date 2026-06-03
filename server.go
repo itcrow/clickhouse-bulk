@@ -277,6 +277,16 @@ func InitServer(listen string, collector *Collector, live *Clickhouse, liveDumpe
 	return server
 }
 
+// shutdownJournal flushes and compacts WAL before process exit (os.Exit skips defer).
+func shutdownJournal(j *Journal) {
+	if j == nil {
+		return
+	}
+	if err := j.Close(); err != nil {
+		log.Printf("WARN: journal close: %+v\n", err)
+	}
+}
+
 // SafeQuit flushes in-memory batches and waits for sender queues to drain.
 func SafeQuit(collect *Collector, sender Sender, drainSec int) {
 	if drainSec <= 0 {
@@ -345,7 +355,11 @@ func RunServer(cnf Config) {
 func runServer(cnf Config, signals <-chan os.Signal, exit exitCodeFn) {
 	InitMetrics(cnf.MetricsPrefix, cnf.BackupEnabled())
 
-	journal, err := NewJournal(cnf.JournalDir, cnf.JournalFsync, cnf.MaxJournalPending)
+	journalDir := cnf.EffectiveJournalDir()
+	if !cnf.JournalEnabled && cnf.JournalDir != "" {
+		log.Printf("WARN: journal_dir=%q ignored (journal_enabled=false)\n", cnf.JournalDir)
+	}
+	journal, err := NewJournal(journalDir, cnf.JournalFsync, cnf.MaxJournalPending)
 	if err != nil {
 		log.Fatalf("ERROR: journal: %+v\n", err)
 	}
@@ -383,7 +397,9 @@ func runServer(cnf Config, signals <-chan os.Signal, exit exitCodeFn) {
 			log.Printf("WARN: journal compact: %+v\n", err)
 		}
 		setJournalPendingGauge(journal)
-		log.Printf("Journal enabled: dir=%s fsync=%v\n", cnf.JournalDir, cnf.JournalFsync)
+		log.Printf("Journal enabled: dir=%s fsync=%v\n", journalDir, cnf.JournalFsync)
+	} else {
+		log.Printf("Journal disabled (set journal_enabled=true and journal_dir to enable WAL)\n")
 	}
 
 	// send collected data on SIGTERM and exit
@@ -402,6 +418,7 @@ func runServer(cnf Config, signals <-chan os.Signal, exit exitCodeFn) {
 			exitCode = 1
 		}
 		SafeQuit(collect, sender, cnf.ShutdownDrainSec)
+		shutdownJournal(journal)
 		log.Printf("Shutdown complete, exiting\n")
 		exit(exitCode)
 	}()
@@ -425,6 +442,7 @@ func runServer(cnf Config, signals <-chan os.Signal, exit exitCodeFn) {
 	if err != nil && err != http.ErrServerClosed {
 		log.Printf("ListenAndServe: %+v\n", err)
 		SafeQuit(collect, sender, cnf.ShutdownDrainSec)
-		exit(1)
+		shutdownJournal(journal)
+		os.Exit(1)
 	}
 }

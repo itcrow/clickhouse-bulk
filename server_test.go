@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -81,6 +82,29 @@ func TestServer_SafeQuit(t *testing.T) {
 
 	assert.True(t, collect.Empty())
 	assert.True(t, sender.Empty())
+}
+
+func TestShutdownJournal(t *testing.T) {
+	dir := "journaltest-shutdown"
+	os.RemoveAll(dir)
+	defer os.RemoveAll(dir)
+
+	j, err := NewJournal(dir, false, 0)
+	assert.Nil(t, err)
+	id, err := j.Append("p", "row")
+	assert.Nil(t, err)
+	err = j.Ack([]uint64{id})
+	assert.Nil(t, err)
+
+	data, err := os.ReadFile(filepath.Join(dir, walFileName))
+	assert.Nil(t, err)
+	assert.NotEmpty(t, data, "deferred compact leaves acked row in WAL until Close")
+
+	shutdownJournal(j)
+	data, err = os.ReadFile(filepath.Join(dir, walFileName))
+	assert.Nil(t, err)
+	assert.Empty(t, data, "shutdownJournal should compact WAL on exit")
+	shutdownJournal(nil)
 }
 
 func TestServer_MultiServer(t *testing.T) {

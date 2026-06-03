@@ -1,0 +1,51 @@
+LOADTEST_SHORT = LOAD_TEST=1 LOAD_TEST_DURATION=45s LOAD_TEST_RPS=150 \
+	LOAD_TEST_MAC_COUNT=150 LOAD_TEST_MEMSTATS=1 LOAD_TEST_PROGRESS_INTERVAL=3s \
+	LOAD_TEST_DRAIN_SEC=180
+LOADTEST_GO = go test -timeout=8m -run '^TestLoad_SustainedInsert$$' -count=1 -v .
+
+# 2h suite: dual-write, variable latency on backup mock CH
+LOADTEST_LONG = LOAD_TEST=1 LOAD_TEST_DURATION=10h LOAD_TEST_RPS=500 LOAD_TEST_MAC_COUNT=500 \
+	LOAD_TEST_MEMSTATS=1 LOAD_TEST_PROGRESS_INTERVAL=30s LOAD_TEST_DRAIN_SEC=3600 \
+	LOAD_TEST_MAX_INFLIGHT=500
+LOADTEST_LONG_GO = go test -timeout=4h30m -run '^TestLoad_SustainedInsert$$' -count=1 -v .
+LOADTEST_CH_LAT_BACKUP = LOAD_TEST_CH_DELAY_BACKUP=200ms LOAD_TEST_CH_DELAY_JITTER=800ms
+
+.PHONY: loadtest-suite loadtest-suite-quick loadtest-suite-no-journal loadtest-suite-journal \
+	loadtest-short loadtest-short-journal loadtest-short-ch-delay \
+	loadtest-ch-down-window loadtest-ch-down-always loadtest-ch-down-backup loadtest-ch-down-live
+
+loadtest-suite:
+	chmod +x scripts/run-loadtest-cases.sh scripts/loadtest_plot.py
+	scripts/run-loadtest-cases.sh
+
+loadtest-suite-quick:
+	chmod +x scripts/run-loadtest-cases.sh scripts/loadtest_plot.py
+	LOADTEST_SUITE_MODE=quick scripts/run-loadtest-cases.sh
+
+loadtest-suite-no-journal:
+	$(LOADTEST_LONG) $(LOADTEST_CH_LAT_BACKUP) $(LOADTEST_LONG_GO)
+
+loadtest-suite-journal:
+	$(LOADTEST_LONG) LOAD_TEST_JOURNAL=true $(LOADTEST_CH_LAT_BACKUP) $(LOADTEST_LONG_GO)
+
+loadtest-short:
+	$(LOADTEST_SHORT) $(LOADTEST_GO)
+
+loadtest-short-journal:
+	$(LOADTEST_SHORT) LOAD_TEST_JOURNAL=true LOAD_TEST_MAX_INFLIGHT=300 $(LOADTEST_GO)
+
+loadtest-short-ch-delay:
+	$(LOADTEST_SHORT) LOAD_TEST_CH_DELAY=200ms LOAD_TEST_MAX_INFLIGHT=300 $(LOADTEST_GO)
+
+loadtest-ch-down-window:
+	$(LOADTEST_SHORT) LOAD_TEST_CH_DOWN=window LOAD_TEST_CH_DOWN_AFTER=15s \
+		LOAD_TEST_CH_DOWN_FOR=15s $(LOADTEST_GO)
+
+loadtest-ch-down-always:
+	$(LOADTEST_SHORT) LOAD_TEST_CH_DOWN=always LOAD_TEST_EXPECT_CH=0 $(LOADTEST_GO)
+
+loadtest-ch-down-backup:
+	$(LOADTEST_SHORT) LOAD_TEST_CH_DOWN_BACKUP=always $(LOADTEST_GO)
+
+loadtest-ch-down-live:
+	$(LOADTEST_SHORT) LOAD_TEST_CH_DOWN_LIVE=always LOAD_TEST_LIVE_ONLY=1 LOAD_TEST_EXPECT_CH=0 $(LOADTEST_GO)

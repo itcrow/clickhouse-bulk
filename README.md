@@ -15,7 +15,7 @@ Based on [nikepan/clickhouse-bulk](https://github.com/nikepan/clickhouse-bulk) w
 - Batch by query key (`flush_count`, `flush_interval`)
 - Multiple servers per target with failover
 - **Live + backup** async dual-write (`clickhouse-backup`)
-- **Journal** — durable HTTP `200` before ClickHouse (`journal_dir`)
+- **Journal (opt-in)** — durable HTTP `200` before ClickHouse when `journal_enabled` is true
 - On failure — spool to `dump_dir` / `bkp_dump_dir` with automatic replay
 - 4xx batches → `failed/` (no infinite retry)
 - **Send rate limit** per target (`send_max_rps`)
@@ -38,7 +38,7 @@ docker run -d -p 8124:8124 \
 **From source:**
 
 ```bash
-cp config.sample.json config.json   # live + journal
+cp config.sample.json config.json   # live only (journal off by default)
 # or: cp config.sample-backup.json config.json
 go build
 ./clickhouse-bulk -config config.json
@@ -59,6 +59,7 @@ Send INSERTs to `http://127.0.0.1:8124` (not the native ClickHouse port unless y
 | [docs/ALERTS.md](docs/ALERTS.md) | Prometheus alert examples |
 | [CHANGELOG.md](CHANGELOG.md) | Change history |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Known issues / roadmap |
+| [docs/LOAD_TEST.md](docs/LOAD_TEST.md) | Sustained load test (opt-in) |
 
 Dependency updates: [Dependabot](https://docs.github.com/en/code-security/dependabot) (`.github/dependabot.yml`) — weekly PRs for Go modules, GitHub Actions, and Docker base images.
 
@@ -66,7 +67,7 @@ Dependency updates: [Dependabot](https://docs.github.com/en/code-security/depend
 
 ### Live only (default sample)
 
-`config.sample.json` — one ClickHouse, optional journal, no backup.
+`config.sample.json` — one ClickHouse, journal **off** by default, no backup.
 
 ### Live + backup
 
@@ -81,9 +82,14 @@ Dependency updates: [Dependabot](https://docs.github.com/en/code-security/depend
 
 Each batch: live queue first, then backup queue. Separate dumps and replay intervals.
 
-### Journal off
+### Journal on (optional)
 
-Set `"journal_dir": ""` or unset — legacy behavior (HTTP `200` before in-memory accept only).
+```json
+"journal_enabled": true,
+"journal_dir": "journal"
+```
+
+Or `JOURNAL_ENABLED=true` and `JOURNAL_DIR`. With `journal_enabled` true and empty `journal_dir`, the path defaults to `journal`. Setting only `journal_dir` without the flag leaves journal **off**.
 
 ## Configuration (summary)
 
@@ -95,8 +101,6 @@ Set `"journal_dir": ""` or unset — legacy behavior (HTTP `200` before in-memor
   "dump_dir": "dumps",
   "dump_check_interval": 300,
   "dump_replay_batch": 10,
-  "journal_dir": "journal",
-  "max_journal_pending": 1000000,
   "shutdown_drain_sec": 60,
   "clickhouse": {
     "servers": ["http://127.0.0.1:8123"],
@@ -116,7 +120,8 @@ Common overrides:
 |----------|---------|
 | `CLICKHOUSE_SERVERS` | Live URLs (comma-separated) |
 | `CLICKHOUSE_BACKUP_SERVERS` | Enable backup + URLs |
-| `JOURNAL_DIR` | WAL path (`""` disables) |
+| `JOURNAL_ENABLED` | `true` / `false` — enable WAL (default off) |
+| `JOURNAL_DIR` | WAL directory (only if journal enabled) |
 | `MAX_JOURNAL_PENDING` | WAL backlog cap (503 when full) |
 | `CLICKHOUSE_SEND_MAX_RPS` | Live send rate limit |
 | `CLICKHOUSE_BACKUP_SEND_MAX_RPS` | Backup send rate limit |

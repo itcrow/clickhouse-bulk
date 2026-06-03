@@ -12,10 +12,7 @@
   "debug": false,
   "log_queries": true,
   "dump_dir": "dumps",
-  "journal_dir": "journal",
-  "journal_fsync": false,
   "bkp_dump_dir": "dumps-bkp",
-  "max_journal_pending": 1000000,
   "clickhouse": {
     "down_timeout": 60,
     "connect_timeout": 10,

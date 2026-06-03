@@ -9,10 +9,17 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 const walFileName = "wal.jsonl"
 const ackFileName = "ack.jsonl"
+
+// Deferred compact limits (P5.1 — avoid full WAL rewrite on every Ack).
+const (
+	journalCompactMinInterval = 5 * time.Second
+	journalCompactMinAcks     = 100
+)
 
 // ErrJournalBacklog is returned when max_journal_pending is exceeded.
 var ErrJournalBacklog = fmt.Errorf("journal backlog limit exceeded")
@@ -24,8 +31,13 @@ type Journal struct {
 	maxPending       int
 	mu               sync.Mutex
 	wal              *os.File
+	walWriter        *bufio.Writer
+	ackFile          *os.File
 	nextID           uint64
 	acked            map[uint64]struct{}
+	pendingCount     int
+	acksSinceCompact int
+	lastCompact      time.Time
 }
 
 type journalRecord struct {
@@ -45,18 +57,33 @@ func NewJournal(dir string, fsync bool, maxPending int) (*Journal, error) {
 	if err := os.MkdirAll(dir, 0766); err != nil {
 		return nil, err
 	}
-	j := &Journal{dir: dir, fsync: fsync, maxPending: maxPending, acked: make(map[uint64]struct{})}
+	j := &Journal{
+		dir:          dir,
+		fsync:        fsync,
+		maxPending:   maxPending,
+		acked:        make(map[uint64]struct{}),
+		lastCompact:  time.Now(),
+	}
 	if err := j.loadAcked(); err != nil {
 		return nil, err
 	}
 	if err := j.openWAL(); err != nil {
 		return nil, err
 	}
+	j.walWriter = bufio.NewWriter(j.wal)
+	if err := j.openAckFile(); err != nil {
+		return nil, err
+	}
+	n, err := j.countPendingOnDiskLocked()
+	if err != nil {
+		return nil, err
+	}
+	j.pendingCount = n
 	return j, nil
 }
 
-func (j *Journal) walPath() string  { return filepath.Join(j.dir, walFileName) }
-func (j *Journal) ackPath() string  { return filepath.Join(j.dir, ackFileName) }
+func (j *Journal) walPath() string { return filepath.Join(j.dir, walFileName) }
+func (j *Journal) ackPath() string { return filepath.Join(j.dir, ackFileName) }
 
 func (j *Journal) loadAcked() error {
 	f, err := os.Open(j.ackPath())
@@ -75,6 +102,15 @@ func (j *Journal) loadAcked() error {
 		}
 	}
 	return sc.Err()
+}
+
+func (j *Journal) openAckFile() error {
+	f, err := os.OpenFile(j.ackPath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	j.ackFile = f
+	return nil
 }
 
 func (j *Journal) openWAL() error {
@@ -103,6 +139,65 @@ func (j *Journal) scanMaxID() error {
 		}
 	}
 	return sc.Err()
+}
+
+func (j *Journal) countPendingOnDiskLocked() (int, error) {
+	f, err := os.Open(j.walPath())
+	if os.IsNotExist(err) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	n := 0
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		var rec journalRecord
+		if json.Unmarshal(sc.Bytes(), &rec) != nil {
+			continue
+		}
+		if _, ok := j.acked[rec.ID]; !ok {
+			n++
+		}
+	}
+	return n, sc.Err()
+}
+
+func (j *Journal) flushWalLocked() error {
+	if j.walWriter == nil {
+		return nil
+	}
+	if err := j.walWriter.Flush(); err != nil {
+		return err
+	}
+	if j.fsync && j.wal != nil {
+		return j.wal.Sync()
+	}
+	return nil
+}
+
+func (j *Journal) resetAckFileLocked() error {
+	if j.ackFile != nil {
+		if err := j.ackFile.Close(); err != nil {
+			return err
+		}
+		j.ackFile = nil
+	}
+	if err := os.WriteFile(j.ackPath(), nil, 0644); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return j.openAckFile()
+}
+
+func (j *Journal) maybeCompactLocked() error {
+	if j.acksSinceCompact == 0 {
+		return nil
+	}
+	if j.acksSinceCompact < journalCompactMinAcks && time.Since(j.lastCompact) < journalCompactMinInterval {
+		return nil
+	}
+	return j.compactLocked()
 }
 
 // DirBytes returns total size of files under the journal directory.
@@ -137,14 +232,8 @@ func (j *Journal) AppendOpaque(params, content, contentType string) (uint64, err
 func (j *Journal) appendRecord(rec journalRecord) (uint64, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	if j.maxPending > 0 {
-		n, err := j.pendingCountLocked()
-		if err != nil {
-			return 0, err
-		}
-		if n >= j.maxPending {
-			return 0, ErrJournalBacklog
-		}
+	if j.maxPending > 0 && j.pendingCount >= j.maxPending {
+		return 0, ErrJournalBacklog
 	}
 	j.nextID++
 	id := j.nextID
@@ -153,14 +242,13 @@ func (j *Journal) appendRecord(rec journalRecord) (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
-	if _, err := j.wal.Write(append(line, '\n')); err != nil {
+	if _, err := j.walWriter.Write(append(line, '\n')); err != nil {
 		return 0, err
 	}
-	if j.fsync {
-		if err := j.wal.Sync(); err != nil {
-			return 0, err
-		}
+	if err := j.flushWalLocked(); err != nil {
+		return 0, err
 	}
+	j.pendingCount++
 	return id, nil
 }
 
@@ -171,11 +259,12 @@ func (j *Journal) Ack(ids []uint64) error {
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	ackf, err := os.OpenFile(j.ackPath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return err
+	if j.ackFile == nil {
+		if err := j.openAckFile(); err != nil {
+			return err
+		}
 	}
-	defer ackf.Close()
+	ackedNew := 0
 	for _, id := range ids {
 		if id == 0 {
 			continue
@@ -183,53 +272,39 @@ func (j *Journal) Ack(ids []uint64) error {
 		if _, ok := j.acked[id]; ok {
 			continue
 		}
-		if _, err := fmt.Fprintf(ackf, "%d\n", id); err != nil {
+		if _, err := fmt.Fprintf(j.ackFile, "%d\n", id); err != nil {
 			return err
 		}
 		j.acked[id] = struct{}{}
+		j.pendingCount--
+		ackedNew++
 	}
+	if ackedNew == 0 {
+		return nil
+	}
+	j.acksSinceCompact += ackedNew
 	if j.fsync {
-		if err := ackf.Sync(); err != nil {
+		if err := j.ackFile.Sync(); err != nil {
 			return err
 		}
 	}
-	return j.compactLocked()
-}
-
-func (j *Journal) pendingCountLocked() (int, error) {
-	f, err := os.Open(j.walPath())
-	if os.IsNotExist(err) {
-		return 0, nil
-	}
-	if err != nil {
-		return 0, err
-	}
-	defer f.Close()
-	n := 0
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		var rec journalRecord
-		if json.Unmarshal(sc.Bytes(), &rec) != nil {
-			continue
-		}
-		if _, ok := j.acked[rec.ID]; !ok {
-			n++
-		}
-	}
-	return n, sc.Err()
+	return j.maybeCompactLocked()
 }
 
 // PendingCount returns WAL records not yet acked.
 func (j *Journal) PendingCount() (int, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	return j.pendingCountLocked()
+	return j.pendingCount, nil
 }
 
 // ReplayUnacked pushes all non-acked records into the collector.
 func (j *Journal) ReplayUnacked(replay func(journalRecord)) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	if err := j.flushWalLocked(); err != nil {
+		return err
+	}
 	f, err := os.Open(j.walPath())
 	if os.IsNotExist(err) {
 		return nil
@@ -267,6 +342,9 @@ func (j *Journal) Compact() error {
 }
 
 func (j *Journal) compactLocked() error {
+	if err := j.flushWalLocked(); err != nil {
+		return err
+	}
 	f, err := os.Open(j.walPath())
 	if os.IsNotExist(err) {
 		return nil
@@ -308,31 +386,57 @@ func (j *Journal) compactLocked() error {
 	}
 	if j.wal != nil {
 		j.wal.Close()
+		j.wal = nil
 	}
+	j.walWriter = nil
 	if err := os.Rename(tmp, j.walPath()); err != nil {
 		return err
 	}
 	if err := j.openWAL(); err != nil {
 		return err
 	}
-	// WAL contains only pending rows; ack file is redundant until new acks arrive.
+	j.walWriter = bufio.NewWriter(j.wal)
 	j.acked = make(map[uint64]struct{})
-	if err := os.WriteFile(j.ackPath(), nil, 0644); err != nil && !os.IsNotExist(err) {
+	j.pendingCount = len(pending)
+	j.acksSinceCompact = 0
+	j.lastCompact = time.Now()
+	if err := j.resetAckFileLocked(); err != nil {
 		return err
+	}
+	if j.fsync {
+		if err := j.flushWalLocked(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-// Close closes the WAL file.
+// Close flushes WAL, compacts, and closes journal files.
 func (j *Journal) Close() error {
 	if j == nil {
 		return nil
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	if j.wal != nil {
-		return j.wal.Close()
+	if err := j.flushWalLocked(); err != nil {
+		return err
 	}
+	if err := j.compactLocked(); err != nil {
+		return err
+	}
+	if j.ackFile != nil {
+		if err := j.ackFile.Close(); err != nil {
+			return err
+		}
+		j.ackFile = nil
+	}
+	if j.wal != nil {
+		if err := j.wal.Close(); err != nil {
+			return err
+		}
+		j.wal = nil
+	}
+	j.walWriter = nil
 	return nil
 }
 

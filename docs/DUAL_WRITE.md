@@ -7,7 +7,7 @@ Fork extension on top of [clickhouse-bulk](https://github.com/nikepan/clickhouse
 ```mermaid
 flowchart TB
   Client --> HTTP[HTTP :8124]
-  HTTP -->|journal_dir set| WAL[(wal.jsonl)]
+  HTTP -->|journal_enabled| WAL[(wal.jsonl)]
   HTTP --> Collector[Collector / Tables]
   Collector --> LiveQ[Live sender queue]
   Collector --> BkpQ[Backup sender queue]
@@ -41,7 +41,7 @@ Enable backup via `clickhouse-backup` in JSON or `CLICKHOUSE_BACKUP_SERVERS`.
 
 ## Journal (durable HTTP accept)
 
-Optional: set `journal_dir` (e.g. `journal`). Disabled when empty.
+Optional: `journal_enabled: true` and `journal_dir` (e.g. `journal`). Disabled when `journal_enabled` is false.
 
 ### Purpose
 
