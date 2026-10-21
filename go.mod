@@ -3,7 +3,7 @@ module github.com/itcrow/clickhouse-bulk
 require (
 	github.com/ClickHouse/ch-go v0.72.0
 	github.com/andybalholm/brotli v1.1.1
-	github.com/klauspost/compress v1.18.6
+	github.com/klauspost/compress v1.18.7
 	github.com/labstack/echo/v4 v4.15.2
 	github.com/nikepan/go-datastructures v1.0.32
 	github.com/pierrec/lz4/v4 v4.1.26
